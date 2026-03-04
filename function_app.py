@@ -147,10 +147,7 @@ def address_autocomplete(req: func.HttpRequest) -> func.HttpResponse:
         req_maps.add_header("Accept", "application/json")
 
         with urllib.request.urlopen(req_maps, timeout=5) as resp:
-            raw = resp.read().decode("utf-8")
-            data = json.loads(raw) if isinstance(raw, str) else raw
-            if isinstance(data, str):
-                data = json.loads(data)
+            data = json.loads(resp.read().decode("utf-8"))
 
     except Exception as e:
         logging.error(f"Azure Maps error: {e}")
@@ -199,12 +196,31 @@ def address_autocomplete(req: func.HttpRequest) -> func.HttpResponse:
 
 
 # ---------------------------------------------------------------------------
-# Property Lookup — stub for ATTOM integration (requires API key)
+# Property Lookup — calls ATTOM assessment + property detail endpoints
 # ---------------------------------------------------------------------------
+
+def _attom_get(attom_key, resource, address1, address2):
+    """Helper: call an ATTOM endpoint, return parsed dict or None."""
+    base = f"https://api.gateway.attomdata.com/propertyapi/v1.0.0/{resource}"
+    params = urllib.parse.urlencode({"address1": address1, "address2": address2})
+    req_a = urllib.request.Request(f"{base}?{params}", method="GET")
+    req_a.add_header("Accept", "application/json")
+    req_a.add_header("apikey", attom_key)
+    try:
+        with urllib.request.urlopen(req_a, timeout=10) as resp:
+            raw = resp.read().decode("utf-8")
+            data = json.loads(raw)
+            if isinstance(data, str):
+                data = json.loads(data)
+            return data
+    except Exception as e:
+        logging.warning(f"ATTOM {resource} error: {e}")
+        return None
+
 
 @app.route(route="property-lookup", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def property_lookup(req: func.HttpRequest) -> func.HttpResponse:
-    """Look up property data by address. Requires ATTOM API key."""
+    """Look up property data by address. Calls ATTOM assessment + property detail."""
     address1 = req.params.get("address1", "").strip()
     address2 = req.params.get("address2", "").strip()
 
@@ -217,72 +233,146 @@ def property_lookup(req: func.HttpRequest) -> func.HttpResponse:
 
     attom_key = os.environ.get("ATTOM_API_KEY", "")
     if not attom_key:
-        # Return stub response until ATTOM is configured
         return func.HttpResponse(
             json.dumps({
                 "stub": True,
                 "message": "ATTOM not configured — returning placeholder",
                 "tax": {"taxamt": None, "taxyear": None},
-                "property": {"sqft": None, "yearbuilt": None, "bedrooms": None, "bathrooms": None},
-                "assessed": {"total": None, "land": None, "improvements": None},
+                "property": {},
+                "assessed": {},
+                "sale": {},
+                "owner": {},
+                "location": {},
             }),
             status_code=200,
             mimetype="application/json",
         )
 
-    # ATTOM assessment/detail endpoint
-    attom_url = "https://api.gateway.attomdata.com/propertyapi/v1.0.0/assessment/detail"
-    params = urllib.parse.urlencode({
-        "address1": address1,
-        "address2": address2,
-    })
+    # Call both endpoints in sequence
+    assess_data = _attom_get(attom_key, "assessment/detail", address1, address2)
+    prop_data = _attom_get(attom_key, "property/detail", address1, address2)
 
-    try:
-        req_attom = urllib.request.Request(
-            f"{attom_url}?{params}", method="GET"
-        )
-        req_attom.add_header("Accept", "application/json")
-        req_attom.add_header("apikey", attom_key)
+    # Parse assessment response
+    a_prop = {}
+    if assess_data and assess_data.get("property"):
+        a_prop = assess_data["property"][0] if isinstance(assess_data["property"], list) else assess_data["property"]
 
-        with urllib.request.urlopen(req_attom, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-
-    except Exception as e:
-        logging.error(f"ATTOM API error: {e}")
-        return func.HttpResponse(
-            json.dumps({"error": "Property lookup failed"}),
-            status_code=502,
-            mimetype="application/json",
-        )
-
-    # Extract relevant fields from ATTOM response
-    prop = data.get("property", [{}])[0] if data.get("property") else {}
-    assessment = prop.get("assessment", {})
+    assessment = a_prop.get("assessment", {})
     tax = assessment.get("tax", {})
     assessed = assessment.get("assessed", {})
-    building = prop.get("building", {})
-    summary = building.get("summary", {}) if building else {}
-    rooms = building.get("rooms", {}) if building else {}
-    lot = prop.get("lot", {})
+    market = assessment.get("market", {})
 
+    # Parse property detail response
+    p_prop = {}
+    if prop_data and prop_data.get("property"):
+        p_prop = prop_data["property"][0] if isinstance(prop_data["property"], list) else prop_data["property"]
+
+    building = p_prop.get("building", {})
+    b_summary = building.get("summary", {}) if isinstance(building, dict) else {}
+    b_size = building.get("size", {}) if isinstance(building, dict) else {}
+    b_rooms = building.get("rooms", {}) if isinstance(building, dict) else {}
+    b_interior = building.get("interior", {}) if isinstance(building, dict) else {}
+    b_construction = building.get("construction", {}) if isinstance(building, dict) else {}
+    b_parking = building.get("parking", {}) if isinstance(building, dict) else {}
+    b_heating = building.get("heating", {}) if isinstance(building, dict) else {}
+
+    lot = p_prop.get("lot", {})
+    location = p_prop.get("area", {})
+    address = p_prop.get("address", {})
+    vintage = p_prop.get("vintage", {})
+    summary_p = p_prop.get("summary", {})
+
+    # Sale history (may be in property detail)
+    sale = p_prop.get("sale", {})
+    sale_history = p_prop.get("salehistory", [])
+
+    # Owner info
+    owner = p_prop.get("owner", {})
+
+    # Build comprehensive result
     result = {
         "stub": False,
         "tax": {
             "taxamt": tax.get("taxamt"),
             "taxyear": tax.get("taxyear"),
-        },
-        "property": {
-            "sqft": summary.get("sizeInd"),
-            "yearbuilt": summary.get("yearbuilt"),
-            "bedrooms": rooms.get("beds"),
-            "bathrooms": rooms.get("bathsfull"),
-            "lotsize": lot.get("lotsize2"),
-            "stories": summary.get("stories"),
+            "taxpersizeunit": tax.get("taxpersizeunit"),
         },
         "assessed": {
             "total": assessed.get("assdttlvalue"),
             "land": assessed.get("assdlandvalue"),
             "improvements": assessed.get("assdimprvalue"),
+        },
+        "market": {
+            "total": market.get("mktttlvalue"),
+            "land": market.get("mktlandvalue"),
+            "improvements": market.get("mktimprvalue"),
+        },
+        "property": {
+            "yearbuilt": b_summary.get("yearbuilt") or vintage.get("lastModified"),
+            "sqft": b_size.get("livingsize") or b_size.get("universalsize") or b_summary.get("sizeInd"),
+            "bedrooms": b_rooms.get("beds") or b_rooms.get("bathstotal"),
+            "bathrooms": b_rooms.get("bathsfull"),
+            "bathshalf": b_rooms.get("bathshalf"),
+            "stories": b_summary.get("stories"),
+            "units": b_summary.get("unitsCount"),
+            "condition": b_construction.get("condition"),
+            "rooftype": b_construction.get("roofcover"),
+            "roofmaterial": b_construction.get("roofShape"),
+            "walltype": b_construction.get("wallType"),
+            "foundation": b_construction.get("foundationType"),
+            "heating": b_heating.get("heattype"),
+            "cooling": b_heating.get("actype"),
+            "fireplace": b_interior.get("fplccount"),
+            "pool": lot.get("pooltype"),
+            "parking": b_parking.get("prkgType"),
+            "garagesize": b_parking.get("prkgSize"),
+            "propertytype": summary_p.get("propclass") or summary_p.get("proptype"),
+            "propsubtype": summary_p.get("propsubtype"),
+        },
+        "lot": {
+            "size_sqft": lot.get("lotsize2"),
+            "size_acres": lot.get("lotsize1"),
+            "depth": lot.get("depth"),
+            "frontage": lot.get("frontage"),
+            "lotnum": lot.get("lotnum"),
+            "zoning": lot.get("zoningType"),
+        },
+        "location": {
+            "county": location.get("countrysecsubd"),
+            "subdivision": location.get("subdname"),
+            "taxcodearea": location.get("taxcodearea"),
+            "census_tract": location.get("censustractident"),
+            "legal": p_prop.get("legal", {}),
+        },
+        "owner": {
+            "name": f"{owner.get('owner1', {}).get('firstnameandmi', '')} {owner.get('owner1', {}).get('lastnameorsinglename', '')}".strip() if isinstance(owner.get("owner1"), dict) else None,
+            "mailingaddr": owner.get("mailingaddressoneline"),
+            "ownertype": owner.get("corporateindicator"),
+        },
+        "sale": {
+            "last_sale_date": sale.get("saleTransDate") or sale.get("salesearchdate"),
+            "last_sale_price": sale.get("saleamt") or sale.get("saledisclosuretype"),
+        },
+        "sale_history": [
+            {
+                "date": sh.get("saleTransDate") or sh.get("salesearchdate"),
+                "price": sh.get("saleamt"),
+                "type": sh.get("saledisclosuretype"),
+            }
+            for sh in (sale_history if isinstance(sale_history, list) else [])
+        ][:5],  # last 5 sales
+        "address": {
+            "oneline": address.get("oneLine"),
+            "line1": address.get("line1"),
+            "line2": address.get("line2"),
+            "locality": address.get("locality"),
+            "countrySubd": address.get("countrySubd"),
+            "postal1": address.get("postal1"),
+        },
+        "_raw_keys": {
+            "assessment": list(assessment.keys()) if assessment else [],
+            "building": list(building.keys()) if isinstance(building, dict) else [],
+            "prop_root": list(p_prop.keys()) if p_prop else [],
         },
     }
 
