@@ -147,7 +147,10 @@ def address_autocomplete(req: func.HttpRequest) -> func.HttpResponse:
         req_maps.add_header("Accept", "application/json")
 
         with urllib.request.urlopen(req_maps, timeout=5) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+            raw = resp.read().decode("utf-8")
+            data = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(data, str):
+                data = json.loads(data)
 
     except Exception as e:
         logging.error(f"Azure Maps error: {e}")
