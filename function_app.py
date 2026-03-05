@@ -146,7 +146,7 @@ def address_autocomplete(req: func.HttpRequest) -> func.HttpResponse:
         req_maps = urllib.request.Request(url, method="GET")
         req_maps.add_header("Accept", "application/json")
 
-    with urllib.request.urlopen(req_maps, timeout=5) as resp:
+        with urllib.request.urlopen(req_maps, timeout=5) as resp:
             raw = resp.read().decode("utf-8")
             data = json.loads(raw) if isinstance(raw, str) else raw
             if isinstance(data, str):
