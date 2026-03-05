@@ -372,10 +372,8 @@ def property_lookup(req: func.HttpRequest) -> func.HttpResponse:
             "countrySubd": address.get("countrySubd"),
             "postal1": address.get("postal1"),
         },
-        "_debug_summary": b_summary,
-        "_debug_prop_summary": summary_p,
-        "_debug_building_size": b_size,
-        "_debug_vintage": vintage,
+        "_debug_full_property": p_prop,
+        "_debug_full_assessment": a_prop,
         "_raw_keys": {
             "assessment": list(assessment.keys()) if assessment else [],
             "building": list(building.keys()) if isinstance(building, dict) else [],
