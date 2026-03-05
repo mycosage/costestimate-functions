@@ -147,10 +147,7 @@ def address_autocomplete(req: func.HttpRequest) -> func.HttpResponse:
         req_maps.add_header("Accept", "application/json")
 
         with urllib.request.urlopen(req_maps, timeout=5) as resp:
-            raw = resp.read().decode("utf-8")
-            data = json.loads(raw) if isinstance(raw, str) else raw
-            if isinstance(data, str):
-                data = json.loads(data)
+            data = json.loads(resp.read().decode("utf-8"))
 
     except Exception as e:
         logging.error(f"Azure Maps error: {e}")
@@ -277,13 +274,14 @@ def property_lookup(req: func.HttpRequest) -> func.HttpResponse:
     b_interior = building.get("interior", {}) if isinstance(building, dict) else {}
     b_construction = building.get("construction", {}) if isinstance(building, dict) else {}
     b_parking = building.get("parking", {}) if isinstance(building, dict) else {}
-    b_heating = building.get("heating", {}) if isinstance(building, dict) else {}
 
     lot = p_prop.get("lot", {})
-    location = p_prop.get("area", {})
+    area = p_prop.get("area", {})
     address = p_prop.get("address", {})
-    vintage = p_prop.get("vintage", {})
     summary_p = p_prop.get("summary", {})
+    utilities = p_prop.get("utilities", {})
+    loc = p_prop.get("location", {})
+    identifier = p_prop.get("identifier", {})
 
     # Sale history (may be in property detail)
     sale = p_prop.get("sale", {})
@@ -304,6 +302,7 @@ def property_lookup(req: func.HttpRequest) -> func.HttpResponse:
             "total": assessed.get("assdttlvalue"),
             "land": assessed.get("assdlandvalue"),
             "improvements": assessed.get("assdimprvalue"),
+            "persizeunit": assessed.get("assdttlpersizeunit"),
         },
         "market": {
             "total": market.get("mktttlvalue"),
@@ -311,26 +310,34 @@ def property_lookup(req: func.HttpRequest) -> func.HttpResponse:
             "improvements": market.get("mktimprvalue"),
         },
         "property": {
-            "yearbuilt": b_summary.get("yearbuilt") or vintage.get("lastModified"),
-            "sqft": b_size.get("livingsize") or b_size.get("universalsize") or b_summary.get("sizeInd"),
-            "bedrooms": b_rooms.get("beds") or b_rooms.get("bathstotal"),
+            "yearbuilt": summary_p.get("yearbuilt") or b_summary.get("yearbuilt"),
+            "sqft": b_size.get("livingsize") or b_size.get("universalsize"),
+            "groundfloorsize": b_size.get("groundfloorsize"),
+            "bldgsize": b_size.get("bldgsize"),
+            "bedrooms": b_rooms.get("beds"),
             "bathrooms": b_rooms.get("bathsfull"),
             "bathshalf": b_rooms.get("bathshalf"),
-            "stories": b_summary.get("stories"),
-            "units": b_summary.get("unitsCount"),
-            "condition": b_construction.get("condition"),
-            "rooftype": b_construction.get("roofcover"),
-            "roofmaterial": b_construction.get("roofShape"),
-            "walltype": b_construction.get("wallType"),
-            "foundation": b_construction.get("foundationType"),
-            "heating": b_heating.get("heattype"),
-            "cooling": b_heating.get("actype"),
+            "stories": b_summary.get("levels"),
+            "archstyle": b_summary.get("archStyle"),
+            "bldgtype": b_summary.get("bldgType"),
+            "basement_sqft": b_interior.get("bsmtsize"),
+            "basement_type": b_interior.get("bsmttype"),
             "fireplace": b_interior.get("fplccount"),
+            "fireplace_type": b_interior.get("fplctype"),
+            "foundation": b_construction.get("foundationtype"),
+            "rooftype": b_construction.get("roofcover"),
+            "heating": utilities.get("heatingtype"),
+            "cooling": utilities.get("coolingtype"),
             "pool": lot.get("pooltype"),
             "parking": b_parking.get("prkgType"),
+            "garagetype": b_parking.get("garagetype"),
             "garagesize": b_parking.get("prkgSize"),
-            "propertytype": summary_p.get("propclass") or summary_p.get("proptype"),
+            "garagespaces": b_parking.get("prkgSpaces"),
+            "propertytype": summary_p.get("propertyType") or summary_p.get("propclass"),
             "propsubtype": summary_p.get("propsubtype"),
+            "proplanduse": summary_p.get("propLandUse"),
+            "occupancy": summary_p.get("absenteeInd"),
+            "legal": summary_p.get("legal1"),
         },
         "lot": {
             "size_sqft": lot.get("lotsize2"),
@@ -341,11 +348,20 @@ def property_lookup(req: func.HttpRequest) -> func.HttpResponse:
             "zoning": lot.get("zoningType"),
         },
         "location": {
-            "county": location.get("countrysecsubd"),
-            "subdivision": location.get("subdname"),
-            "taxcodearea": location.get("taxcodearea"),
-            "census_tract": location.get("censustractident"),
-            "legal": p_prop.get("legal", {}),
+            "county": area.get("countrysecsubd"),
+            "subdivision": area.get("subdname"),
+            "taxcodearea": area.get("taxcodearea"),
+            "munname": area.get("munname"),
+            "latitude": loc.get("latitude"),
+            "longitude": loc.get("longitude"),
+            "accuracy": loc.get("accuracy"),
+            "geoid": loc.get("geoid"),
+            "geoidv4": loc.get("geoIdV4", {}),
+        },
+        "identifier": {
+            "attomId": identifier.get("attomId") or identifier.get("Id"),
+            "fips": identifier.get("fips"),
+            "apn": identifier.get("apn"),
         },
         "owner": {
             "name": f"{owner.get('owner1', {}).get('firstnameandmi', '')} {owner.get('owner1', {}).get('lastnameorsinglename', '')}".strip() if isinstance(owner.get("owner1"), dict) else None,
@@ -363,7 +379,7 @@ def property_lookup(req: func.HttpRequest) -> func.HttpResponse:
                 "type": sh.get("saledisclosuretype"),
             }
             for sh in (sale_history if isinstance(sale_history, list) else [])
-        ][:5],  # last 5 sales
+        ][:5],
         "address": {
             "oneline": address.get("oneLine"),
             "line1": address.get("line1"),
@@ -371,13 +387,7 @@ def property_lookup(req: func.HttpRequest) -> func.HttpResponse:
             "locality": address.get("locality"),
             "countrySubd": address.get("countrySubd"),
             "postal1": address.get("postal1"),
-        },
-        "_debug_full_property": p_prop,
-        "_debug_full_assessment": a_prop,
-        "_raw_keys": {
-            "assessment": list(assessment.keys()) if assessment else [],
-            "building": list(building.keys()) if isinstance(building, dict) else [],
-            "prop_root": list(p_prop.keys()) if p_prop else [],
+            "postal2": address.get("postal2"),
         },
     }
 
